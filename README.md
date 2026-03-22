@@ -54,32 +54,45 @@
 8. **MLFlow трейсинг** → логирование параметров и метрик
 
 ### 2.3. Схема взаимодействия компонентов
-Клиент (HTTP запрос)
-│
-▼
-LLM Proxy (FastAPI)
-│
-├──► Guardrails (фильтрация)
-│
-├──► Авторизация (X-Agent-Token)
-│
-├──► Agent Registry (SQLite)
-│
-├──► Smart Balancer
-│ │
-│ ├──► Mock LLM-1 (порт 8001)
-│ ├──► Mock LLM-2 (порт 8001)
-│ └──► Другие провайдеры
-│
-└──► Telemetry
-│
-├──► Prometheus (порт 9091)
-│ │
-│ └──► Grafana (порт 3000)
-│
-└──► MLFlow (порт 5000)
+graph TD
+    %% Nodes definition
+    Client["<b>КЛИЕНТ</b><br/>(HTTP запрос /v1/chat/completions)"]
+    
+    subgraph Proxy ["LLM PROXY (FastAPI)"]
+        direction TB
+        Auth["<b>1. АВТОРИЗАЦИЯ</b><br/>Проверка X-Agent-Token"]
+        Guard["<b>2. GUARDRAILS</b><br/>Фильтрация (Prompt/SQL injection, API-ключи)"]
+        
+        subgraph Balancer ["3. SMART BALANCER"]
+            direction TB
+            Providers["Mock LLM-1 (8001) | Mock LLM-2 (8001) | Другие"]
+            Logic["Алгоритм: Исключение сбоев (errors >= 3) + Min EMA-латентность"]
+        end
+        
+        Metrics["<b>4. TELEMETRY & МЕТРИКИ</b><br/>TTFT | Токены | Стоимость | Латентность"]
+        
+        Auth --> Guard --> Balancer --> Metrics
+    end
 
-text
+    %% External Systems
+    Prom["<b>PROMETHEUS (9091)</b><br/>• Сбор метрик<br/>• Временные ряды"]
+    MLF["<b>MLFLOW (5000)</b><br/>• Трейсинг LLM<br/>• Логирование: provider, model,<br/>input, ttft, cost"]
+    Reg["<b>AGENT REGISTRY (SQLite)</b><br/>• Хранение Agent Cards<br/>• name, description, endpoint"]
+    
+    Grafana["<b>GRAFANA (3000)</b><br/>• Визуализация<br/>• Дашборды: RPS, Latency,<br/>Traffic, Cost"]
+
+    %% Connections
+    Client --> Auth
+    Metrics --> Prom
+    Metrics --> MLF
+    Metrics --> Reg
+    Prom --> Grafana
+
+    %% Styling
+    style Proxy fill:#f9f9ff,stroke:#333,stroke-width:2px
+    style Balancer fill:#fff,stroke:#666,stroke-dasharray: 5 5
+    style Client fill:#e1f5fe,stroke:#01579b
+    style Grafana fill:#fff3e0,stroke:#e65100
 
 ---
 
