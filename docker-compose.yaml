@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  proxy:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mock-llm-1
+      - mock-llm-2
+
+  mock-llm-1:
+    build: .
+    command: uvicorn app.mock_llm:app --host 0.0.0.0 --port 8001
+  
+  mock-llm-2:
+    build: .
+    command: uvicorn app.mock_llm:app --host 0.0.0.0 --port 8001
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9091:9090"  # Сюда мы будем заходить в браузере
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    command: mlflow server --host 0.0.0.0
