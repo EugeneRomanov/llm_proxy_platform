@@ -103,6 +103,7 @@
 │ • Дашборды RPS / Latency │
 └──────────────────────────┘
 ---
+```
 
 ## 3. Функциональные возможности
 
@@ -158,4 +159,375 @@
 
 ---
 
-*Далее следует [Часть 2: Установка и запуск, API Документация]*
+
+## 5. Установка и запуск
+
+### 5.1. Требования
+*   **Docker Desktop** 20.10+
+*   **Docker Compose** 2.0+
+*   **RAM:** 4GB (рекомендуется)
+*   **Диск:** 2GB свободного пространства
+
+### 5.2. Быстрый старт
+
+```bash
+# 1. Клонировать репозиторий
+git clone <repository-url>
+cd bonus_hw
+
+# 2. Запустить все сервисы
+docker-compose up -d
+
+# 3. Дождаться запуска (10-15 секунд)
+sleep 10
+
+# 4. Проверить работу
+curl http://localhost:8000/health
+```
+
+**Ожидаемый ответ:**
+```json
+{
+  "status": "healthy",
+  "service": "llm-proxy"
+}
+```
+
+### 5.3. Остановка сервисов
+```bash
+# Остановить все контейнеры
+docker-compose down
+
+# Остановить и удалить volumes (очистить БД и метрики)
+docker-compose down -v
+```
+
+### 5.4. Сервисы и порты
+
+| Сервис | Порт | Доступ | Назначение |
+| :--- | :--- | :--- | :--- |
+| **LLM Proxy** | 8000 | http://localhost:8000 | Основной API |
+| **Prometheus** | 9091 | http://localhost:9091 | Сбор метрик |
+| **Grafana** | 3000 | http://localhost:3000 | Дашборды и визуализация |
+| **MLFlow** | 5000 | http://localhost:5000 | Трейсинг запросов |
+| **Mock LLM-1** | 8001 | internal | Тестовый провайдер №1 |
+| **Mock LLM-2** | 8001 | internal | Тестовый провайдер №2 |
+
+**Доступ к Grafana:**
+*   **Логин:** `admin`
+*   **Пароль:** `admin`
+
+---
+
+## 6. API Документация
+
+### 6.1. Health Check
+Проверка работоспособности сервиса.
+
+```http
+GET /health
+```
+**Ответ:**
+```json
+{"status":"healthy","service":"llm-proxy"}
+```
+
+### 6.2. Регистрация агента
+Регистрация нового A2A (Agent-to-Agent) агента в реестре.
+
+```http
+POST /agents/register?name={name}&description={description}&supported_methods={methods}
+```
+
+**Параметры:**
+
+| Параметр | Тип | Обяз. | Описание |
+| :--- | :--- | :---: | :--- |
+| `name` | string | ✅ | Уникальное имя агента |
+| `description` | string | ❌ | Краткое описание |
+| `supported_methods` | string | ❌ | Методы (по умолчанию: `chat.completions`) |
+| `endpoint` | string | ❌ | URL агента (опционально) |
+
+**Пример запроса:**
+```bash
+curl -X POST "http://localhost:8000/agents/register?name=my-agent&description=Test%20Agent"
+```
+
+**Ответ:**
+```json
+{
+  "status": "registered",
+  "agent": {
+    "id": 1,
+    "name": "my-agent",
+    "description": "Test Agent",
+    "supported_methods": ["chat.completions"],
+    "endpoint": null,
+    "is_active": true,
+    "created_at": 1774188373
+  }
+}
+```
+
+### 6.3. Список агентов
+Получение списка всех зарегистрированных агентов.
+
+```http
+GET /agents/list?active_only=true
+```
+
+**Параметры:**
+
+| Параметр | Тип | Описание |
+| :--- | :--- | :--- |
+| `active_only` | boolean | Только активные агенты (по умолчанию: `true`) |
+
+**Пример:**
+```bash
+curl "http://localhost:8000/agents/list"
+```
+
+### 6.4. Получение карточки агента
+```http
+GET /agents/{agent_id}
+```
+
+**Пример:**
+```bash
+curl "http://localhost:8000/agents/1"
+```
+
+### 6.5. Удаление агента
+```http
+DELETE /agents/{agent_id}?soft_delete=true
+```
+
+**Параметры:**
+
+| Параметр | Тип | Описание |
+| :--- | :--- | :--- |
+| `soft_delete` | boolean | `true` — деактивация, `false` — полное удаление из БД |
+
+---
+
+### 6.6. Регистрация LLM провайдера
+```http
+POST /registry/providers?name={name}&url={url}&price_per_1k_input_tokens={price}&price_per_1k_output_tokens={price}&timeout_seconds={timeout}
+```
+
+**Параметры:**
+
+| Параметр | Тип | Обяз. | Описание |
+| :--- | :--- | :---: | :--- |
+| `name` | string | ✅ | Уникальное имя провайдера |
+| `url` | string | ✅ | URL эндпоинта (OpenAI compatible) |
+| `price_per_1k_input_tokens` | float | ❌ | Цена за 1000 входных токенов (USD) |
+| `price_per_1k_output_tokens` | float | ❌ | Цена за 1000 выходных токенов (USD) |
+| `rate_limit_rpm` | int | ❌ | Лимит запросов в минуту |
+| `timeout_seconds` | int | ❌ | Таймаут запроса (сек) |
+
+---
+
+### 6.7. Отправка запроса к LLM (Proxy)
+Основной эндпоинт для работы с моделями. Поддерживает балансировку и стриминг.
+
+```http
+POST /v1/chat/completions
+X-Agent-Token: super-secret-token
+Content-Type: application/json
+```
+
+**Заголовки:**
+
+| Заголовок | Значение | Описание |
+| :--- | :--- | :--- |
+| `X-Agent-Token` | `super-secret-token` | Токен для авторизации |
+
+**Тело запроса:**
+```json
+{
+  "model": "gpt-3.5-turbo",
+  "messages": [
+    {"role": "user", "content": "Hello, how are you?"}
+  ],
+  "stream": true
+}
+```
+
+**Пример ответа (SSE поток):**
+```text
+data: {"choices": [{"delta": {"content": "Hello"}}]}
+data: {"choices": [{"delta": {"content": " from"}}]}
+data: {"choices": [{"delta": {"content": " LLM."}}]}
+data: [DONE]
+```
+
+**Коды ошибок:**
+
+| Код | Описание |
+| :--- | :--- |
+| **401** | Неверный или отсутствующий `X-Agent-Token` |
+| **503** | Нет доступных провайдеров (все заблокированы или не найдены) |
+| **400** | Guardrails заблокировал запрос (обнаружен вредоносный паттерн) |
+
+---
+
+### 6.8. Метрики Prometheus
+Системные и бизнес-метрики в формате Prometheus.
+
+```http
+GET /metrics
+```
+
+**Основные метрики:**
+
+| Метка | Тип | Описание |
+| :--- | :--- | :--- |
+| `request_count` | Counter | Общее количество входящих запросов |
+| `request_latency_seconds` | Histogram | Полная латентность запроса (end-to-end) |
+| `llm_ttft_seconds` | Histogram | Time To First Token (время до первого чанка) |
+| `llm_tokens_total` | Counter | Суммарное количество обработанных токенов |
+| `llm_cost_total` | Counter | Накопленная стоимость запросов в USD |
+
+
+
+Вот продолжение и завершение вашего `README.md`, оформленное в чистом и профессиональном стиле для GitHub.
+
+---
+
+## 7. Мониторинг и Observability
+
+### 7.1. Prometheus ([http://localhost:9091](http://localhost:9091))
+Prometheus собирает метрики с LLM Proxy каждые 5 секунд.
+
+**Доступные метрики:**
+
+| Метрика | Тип | Описание | Метки |
+| :--- | :--- | :--- | :--- |
+| `request_count` | Counter | Общее количество запросов | `method`, `endpoint` |
+| `request_latency_seconds` | Histogram | Латентность запросов | `endpoint` |
+| `llm_ttft_seconds` | Histogram | Время до первого токена (TTFT) | `provider` |
+| `llm_tokens_total` | Counter | Количество токенов | `provider`, `type` (in/out) |
+| `llm_cost_total` | Counter | Суммарная стоимость в USD | `provider` |
+
+**Примеры запросов PromQL:**
+```promql
+# RPS (запросов в секунду)
+rate(request_count[1m])
+
+# P95 латентность
+histogram_quantile(0.95, sum(rate(request_latency_seconds_bucket[5m])) by (le))
+
+# Средний TTFT по провайдерам
+avg(rate(llm_ttft_seconds_sum[5m]) / rate(llm_ttft_seconds_count[5m]))
+
+# Общая стоимость по провайдерам
+sum by (provider) (llm_cost_total)
+```
+
+### 7.2. Grafana ([http://localhost:3000](http://localhost:3000))
+**Доступ:** `admin` / `admin`
+
+Рекомендуемые дашборды разделены на логические блоки:
+1.  **Общая статистика:** RPS, P95 Latency, распределение HTTP кодов.
+2.  **Детализация провайдеров:** Сравнение TTFT, расхода токенов и стоимости.
+3.  **Health-aware:** Мониторинг заблокированных провайдеров и ошибок.
+
+### 7.3. MLFlow ([http://localhost:5000](http://localhost:5000))
+MLFlow используется для детального трейсинга каждого LLM-вызова.
+
+| Категория | Параметры / Метрики |
+| :--- | :--- |
+| **Параметры** | `provider`, `model`, `input_text` (первые 500 симв.) |
+| **Метрики** | `ttft_seconds`, `input_tokens`, `output_tokens`, `cost_usd` |
+
+---
+
+## 8. Нагрузочное тестирование
+
+### 8.1. Запуск теста
+```bash
+# 1. Скопировать скрипт в контейнер
+docker cp load_test.py bonus_hw-proxy-1:/tmp/load_test.py
+
+# 2. Запустить тест внутри окружения
+docker-compose exec proxy python /tmp/load_test.py
+```
+
+### 8.2. Результаты (пример)
+```text
+==================================================
+РЕЗУЛЬТАТЫ НАГРУЗОЧНОГО ТЕСТА
+==================================================
+Всего запросов: 50
+Успешных: 43 (86.0%) | Неудачных: 7 (14.0%)
+
+Латентность (успешные):
+  Средняя: 1.65s | P95: 1.70s
+  Min: 1.63s     | Max: 1.70s
+
+Throughput: 0.86 req/sec
+```
+
+---
+
+## 9. Стратегии балансировки
+
+### 9.1. Latency-based routing
+Алгоритм использует **EMA (Exponential Moving Average)** для выбора быстрейшего провайдера:
+`new_latency = α × current_latency + (1-α) × old_latency`
+*(где α = 0.3 — вес свежего измерения)*.
+
+### 9.2. Health-aware routing
+*   **Consecutive Errors:** При достижении 3 ошибок подряд провайдер блокируется.
+*   **Cool-down:** Провайдер исключается из ротации на 30 секунд.
+*   **Auto-recovery:** После истечения времени блокировки провайдер возвращается в строй.
+
+### 9.3. Комбинированная логика
+1. Отфильтровать неактивных (is_active = False).
+2. Отфильтровать заблокированных (blocked_until > now).
+3. Из оставшихся выбрать того, у кого **минимальная EMA-латентность**.
+
+---
+
+## 10. Безопасность
+
+### 10.1. Guardrails (фильтрация контента)
+Система проверяет входящие сообщения на наличие вредоносных паттернов:
+
+| Тип атаки | Паттерн (RegEx) |
+| :--- | :--- |
+| **Prompt injection** | `ignore previous instructions` |
+| **System injection** | `system prompt injection` |
+| **API key leakage** | `sk-[a-zA-Z0-9]{48}` |
+| **SQL injection** | `DROP TABLE`, `SELECT ... FROM` |
+
+### 10.2. Авторизация
+Доступ к Proxy осуществляется через заголовок `X-Agent-Token`. Без него или с неверным токеном возвращается ошибка `401 Unauthorized`.
+
+---
+
+## 11. Устранение неполадок
+
+### 11.1. Частые проблемы
+| Проблема | Причина | Решение |
+| :--- | :--- | :--- |
+| **Connection refused** | Контейнеры не поднялись | `docker-compose up -d` |
+| **401 Unauthorized** | Неверный токен | Использовать `super-secret-token` |
+| **503 No providers** | Все провайдеры в "бане" | Подождать 30 сек или перезагрузить БД |
+| **MLFlow 403** | Защита браузера | Игнорировать или сменить браузер |
+
+### 11.2. Полезные команды
+```bash
+# Перезапуск прокси
+docker-compose restart proxy
+
+# Просмотр логов в реальном времени
+docker-compose logs -f proxy
+
+# Полная очистка (включая БД)
+docker-compose down -v
+```
+
+---
+
